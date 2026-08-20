@@ -1,5 +1,4 @@
-import sqlite3
-import os
+import sqlite3, os
 from datetime import datetime
 from pathlib import Path
 from fastapi import FastAPI, Request, HTTPException
@@ -13,26 +12,14 @@ AUTH_TOKEN = os.environ.get("AUTH_TOKEN", "dev-token")
 
 def init_db():
     conn = sqlite3.connect(str(DB_PATH))
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS records (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            app_name TEXT NOT NULL,
-            event TEXT NOT NULL,
-            timestamp TEXT NOT NULL
-        )
-    """)
+    conn.execute("CREATE TABLE IF NOT EXISTS records (id INTEGER PRIMARY KEY AUTOINCREMENT, app_name TEXT NOT NULL, event TEXT NOT NULL, timestamp TEXT NOT NULL)")
     conn.commit()
     conn.close()
 
 init_db()
 
 app = FastAPI(title="查岗系统")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 class ReportBody(BaseModel):
     app_name: str
@@ -43,33 +30,16 @@ async def report(body: ReportBody, req: Request):
     auth = req.headers.get("Authorization", "")
     if auth != f"Bearer {AUTH_TOKEN}":
         raise HTTPException(401, "Unauthorized")
-    
     now = datetime.utcnow().isoformat()
     conn = sqlite3.connect(str(DB_PATH))
     
     if body.event == "open":
         cur = conn.cursor()
-        cur.execute("""
-            SELECT id, app_name, timestamp FROM records 
-            WHERE event = 'open' AND app_name = ? 
-            AND id NOT IN (
-                SELECT o.id FROM records o
-                JOIN records c ON o.app_name = c.app_name AND o.id < c.id
-                WHERE o.event = 'open' AND c.event = 'close'
-            )
-        """, (body.app_name,))
-        old_opens = cur.fetchall()
-        
-        for old in old_opens:
-            conn.execute(
-                "INSERT INTO records (app_name, event, timestamp) VALUES (?,?,?)",
-                (old[1], "close", now)
-            )
+        cur.execute("SELECT id, app_name FROM records WHERE event='open' AND app_name=? AND id NOT IN (SELECT o.id FROM records o JOIN records c ON o.app_name=c.app_name AND o.id<c.id WHERE o.event='open' AND c.event='close')", (body.app_name,))
+        for old in cur.fetchall():
+            conn.execute("INSERT INTO records (app_name, event, timestamp) VALUES (?,?,?)", (old[1], "close", now))
     
-    conn.execute(
-        "INSERT INTO records (app_name, event, timestamp) VALUES (?,?,?)",
-        (body.app_name, body.event, now)
-    )
+    conn.execute("INSERT INTO records (app_name, event, timestamp) VALUES (?,?,?)", (body.app_name, body.event, now))
     conn.commit()
     conn.close()
     return {"status": "ok"}
@@ -82,35 +52,20 @@ async def ping():
 async def summary():
     conn = sqlite3.connect(str(DB_PATH))
     cur = conn.cursor()
-    
-    cur.execute(
-        "SELECT app_name, event, timestamp FROM records ORDER BY id DESC LIMIT 5"
-    )
+    cur.execute("SELECT app_name, event, timestamp FROM records ORDER BY id DESC LIMIT 5")
     recent = cur.fetchall()
-    
-    cur.execute(
-        "SELECT app_name, event, timestamp FROM records ORDER BY id ASC"
-    )
+    cur.execute("SELECT app_name, event, timestamp FROM records ORDER BY id ASC")
     rows = cur.fetchall()
     conn.close()
-    
-    sessions = {}
-    opens = {}
-    
+    sessions, opens = {}, {}
     for r in rows:
         app, ev, ts = r
         if ev == "open":
             opens[app] = datetime.fromisoformat(ts)
         elif ev == "close" and app in opens:
-            gap = int((datetime.fromisoformat(ts) - opens[app]).total_seconds())
-            sessions[app] = sessions.get(app, 0) + gap
+            sessions[app] = sessions.get(app, 0) + int((datetime.fromisoformat(ts) - opens[app]).total_seconds())
             del opens[app]
-    
-    return {
-        "recent_apps": [r[0] for r in recent],
-        "sessions": sessions
-    }
+    return {"recent_apps": [r[0] for r in recent], "sessions": sessions}
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8000)))
