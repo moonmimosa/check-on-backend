@@ -43,9 +43,33 @@ async def report(body: ReportBody, req: Request):
     auth = req.headers.get("Authorization", "")
     if auth != f"Bearer {AUTH_TOKEN}":
         raise HTTPException(401, "Unauthorized")
-    
+    
     now = datetime.utcnow().isoformat()
     conn = sqlite3.connect(str(DB_PATH))
+    
+    # 自动关闭逻辑：如果这次打开新App，把之前没关的App都关掉
+    if body.event == "open":
+        # 找到这个App之前未关闭的open记录
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT id, app_name, timestamp FROM records 
+            WHERE event = 'open' AND app_name = ? 
+            AND id NOT IN (
+                SELECT o.id FROM records o
+                JOIN records c ON o.app_name = c.app_name AND o.id < c.id
+                WHERE o.event = 'open' AND c.event = 'close'
+            )
+        """, (body.app_name,))
+        old_opens = cur.fetchall()
+        
+        # 给之前未关闭的同App记录补一个close
+        for old in old_opens:
+            conn.execute(
+                "INSERT INTO records (app_name, event, timestamp) VALUES (?,?,?)",
+                (old[1], "close", now)
+            )
+    
+    # 插入当前记录
     conn.execute(
         "INSERT INTO records (app_name, event, timestamp) VALUES (?,?,?)",
         (body.app_name, body.event, now)
@@ -62,21 +86,21 @@ async def ping():
 async def summary():
     conn = sqlite3.connect(str(DB_PATH))
     cur = conn.cursor()
-    
+    
     cur.execute(
         "SELECT app_name, event, timestamp FROM records ORDER BY id DESC LIMIT 5"
     )
     recent = cur.fetchall()
-    
+    
     cur.execute(
         "SELECT app_name, event, timestamp FROM records ORDER BY id ASC"
     )
     rows = cur.fetchall()
     conn.close()
-    
+    
     sessions = {}
     opens = {}
-    
+    
     for r in rows:
         app, ev, ts = r
         if ev == "open":
@@ -85,7 +109,7 @@ async def summary():
             gap = int((datetime.fromisoformat(ts) - opens[app]).total_seconds())
             sessions[app] = sessions.get(app, 0) + gap
             del opens[app]
-    
+    
     return {
         "recent_apps": [r[0] for r in recent],
         "sessions": sessions
