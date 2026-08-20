@@ -47,9 +47,7 @@ async def report(body: ReportBody, req: Request):
     now = datetime.utcnow().isoformat()
     conn = sqlite3.connect(str(DB_PATH))
     
-    # 自动关闭逻辑：如果这次打开新App，把之前没关的App都关掉
     if body.event == "open":
-        # 找到这个App之前未关闭的open记录
         cur = conn.cursor()
         cur.execute("""
             SELECT id, app_name, timestamp FROM records 
@@ -62,14 +60,12 @@ async def report(body: ReportBody, req: Request):
         """, (body.app_name,))
         old_opens = cur.fetchall()
         
-        # 给之前未关闭的同App记录补一个close
         for old in old_opens:
             conn.execute(
                 "INSERT INTO records (app_name, event, timestamp) VALUES (?,?,?)",
                 (old[1], "close", now)
             )
     
-    # 插入当前记录
     conn.execute(
         "INSERT INTO records (app_name, event, timestamp) VALUES (?,?,?)",
         (body.app_name, body.event, now)
